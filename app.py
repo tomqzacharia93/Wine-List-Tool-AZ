@@ -1,72 +1,76 @@
 import streamlit as st
 import pandas as pd
 import io
+import re
 
-# --- CONFIGURATION & PORTFOLIO MAPPING ---
-st.set_page_config(page_title="Wine Portfolio Swap Tool", page_icon="🍷")
-
+# --- CONFIGURATION FROM YOUR GRID ---
 PRIORITY_GRID = {
     "Cabernet": {"<$10": "Hahn", "$10-$15": "Franciscan", "$15-$20": "Smith & Hook", "$20+": "Martis"},
     "Chardonnay": {"<$10": "Clos du Bois", "$10-$15": "William Hill", "$15-$20": "Calcaire", "$20+": "Rombauer"},
-    "Sauvignon Blanc": {"<$10": "Nobilo", "$10-$15": "Whitehaven", "$15-$20": "Whitehaven"},
-    "Pinot Grigio": {"<$10": "Barefoot", "$10-$15": "Ecco Domani", "$15-$20": "Jermann"},
+    "Sauvignon Blanc": {"<$10": "Nobilo", "$10-$15": "Whitehaven", "$15-$20": "Whitehaven/Rombauer"},
+    "Pinot Grigio": {"<$10": "Barefoot", "$10-$15": "Ecco Domani/J CA", "$15-$20": "Jermann"},
     "Pinot Noir": {"<$10": "Mark West", "$10-$15": "Hahn", "$15-$20": "Hahn SLH"},
-    "Sparkling": {"<$10": "La Marca (Split)", "$10-$15": "La Marca", "$15-$20": "La Marca", "$20+": "J Brut Rose"},
-    "Red Alt/Blend": {"$20+": "Orin Swift 8YITD"}
+    "Sparkling": {"<$10": "La Marca (split)", "$10-$15": "La Marca", "$15-$20": "La Marca", "$20+": "J Brut Rose"},
+    "Merlot": {"$20+": "Orin Swift ADJ"},
+    "Red Alt/Blend": {"$20+": "Orin Swift 8YITD/Abstract"}
 }
 
-def get_swap(category, btl_price):
-    if btl_price < 10: tier = "<$10"
-    elif 10 <= btl_price < 15: tier = "$10-$15"
-    elif 15 <= btl_price < 20: tier = "$15-$20"
+def get_swap(category, price):
+    if price < 10: tier = "<$10"
+    elif 10 <= price < 15: tier = "$10-$15"
+    elif 15 <= price < 20: tier = "$15-$20"
     else: tier = "$20+"
     return PRIORITY_GRID.get(category, {}).get(tier, "Orin Swift (General)")
 
-# --- APP UI ---
-st.title("🍷 Live Wine Portfolio Swap Tool")
-st.markdown("Enter a restaurant menu URL to perform a live gap analysis.")
+st.set_page_config(page_title="Priority Swap Tool", page_icon="🍷")
+st.title("🍷 Menu Text to Priority Swap")
+st.markdown("Copy the text from a menu and paste it below. I'll identify the swaps based on your grid.")
 
-url_input = st.text_input("Menu URL", placeholder="https://theflatironroom.com/menu")
+# --- THE INPUT ENGINE ---
+menu_text = st.text_area("Paste Menu Text Here:", height=200, placeholder="Example: Sauvignon Blanc, Luisa 2023... $68")
 
-if url_input:
-    with st.spinner('Scraping menu and applying priority logic...'):
-        # This list mimics the scraper results for the site provided
-        results = [
-            {"Category": "Sparkling", "Current Wine": "Mionetto Prosecco", "Supplier": "Mionetto USA", "Est. Whls Btl": 11.00},
-            {"Category": "Sauvignon Blanc", "Current Wine": "Kim Crawford", "Supplier": "Constellation", "Est. Whls Btl": 14.00},
-            {"Category": "Chardonnay", "Current Wine": "Kendall Jackson", "Supplier": "SWS", "Est. Whls Btl": 15.50},
-            {"Category": "Cabernet", "Current Wine": "Estancia", "Supplier": "SGWS", "Est. Whls Btl": 12.00},
-            {"Category": "Pinot Noir", "Current Wine": "Meiomi", "Supplier": "Constellation", "Est. Whls Btl": 19.00},
-            {"Category": "Chardonnay", "Current Wine": "Cervaro della Sala", "Supplier": "Empire", "Est. Whls Btl": 52.00},
-        ]
+if st.button("Analyze Menu"):
+    if menu_text:
+        # Regex to find prices and names
+        lines = menu_text.split('\n')
+        final_results = []
         
-        final_list = []
-        for item in results:
-            supplier = item["Supplier"]
-            if "Empire" in supplier:
-                rec = "SKIP (Partner)"
-            elif "Kobrand" in supplier:
-                rec = "SKIP (Exclusion)"
-            else:
-                rec = get_swap(item["Category"], item["Est. Whls Btl"])
+        for line in lines:
+            if not line.strip(): continue
             
-            item["Recommended Swap"] = rec
-            final_list.append(item)
+            # Simple logic to find price and category
+            price_match = re.findall(r'\d+', line)
+            btl_price = int(price_match[-1]) / 4 if price_match else 15 # Est. wholesale from btl price
+            
+            # Identify Category
+            cat = "Red Alt/Blend" # Default
+            if "cabernet" in line.lower(): cat = "Cabernet"
+            elif "chardonnay" in line.lower(): cat = "Chardonnay"
+            elif "sauvignon" in line.lower(): cat = "Sauvignon Blanc"
+            elif "grigio" in line.lower(): cat = "Pinot Grigio"
+            elif "noir" in line.lower(): cat = "Pinot Noir"
+            elif "prosecco" in line.lower() or "brut" in line.lower(): cat = "Sparkling"
 
-        df = pd.DataFrame(final_list)
-        
-        st.subheader("Priority Analysis")
-        # Fixed line below
+            # Logic for Partners/Exclusions
+            if any(x in line.lower() for x in ["empire", "antinori", "jermann", "allegrini"]):
+                rec = "SKIP (Empire Partner)"
+            elif "kobrand" in line.lower() or "chimney" in line.lower():
+                rec = "SKIP (Kobrand)"
+            else:
+                rec = get_swap(cat, btl_price)
+            
+            final_results.append({
+                "Menu Line": line[:50],
+                "Detected Category": cat,
+                "Est. Wholesale": btl_price,
+                "Priority Swap": rec
+            })
+
+        df = pd.DataFrame(final_results)
         st.dataframe(df, use_container_width=True)
-
-        # Download Button
+        
+        # Download
         output = io.BytesIO()
         with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
-            df.to_excel(writer, index=False, sheet_name='PrioritySwaps')
-        
-        st.download_button(
-            label="📥 Download Excel Report",
-            data=output.getvalue(),
-            file_name="wine_analysis.xlsx",
-            mime="application/vnd.ms-excel"
-        )
+            df.to_excel(writer, index=False)
+        st.download_button("📥 Download Excel Report", output.getvalue(), "swaps.xlsx")
